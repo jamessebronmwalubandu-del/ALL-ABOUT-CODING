@@ -48,8 +48,28 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     const streamRef = useRef<MediaStream | null>(null);
     const animationRef = useRef<number | null>(null);
     const lastFrameTimeRef = useRef<number>(0);
+    const lastUiUpdateRef = useRef<number>(0);
     const frameCountRef = useRef<number>(0);
     const fpsIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Keep callbacks in refs to prevent the processing loop from restarting unnecessarily
+    const onParticlesDetectedRef = useRef(onParticlesDetected);
+    const onFpsUpdateRef = useRef(onFpsUpdate);
+    const settingsRef = useRef(settings);
+    const calibrationRef = useRef(calibration);
+    const showOverlayRef = useRef(showOverlay);
+    const showScaleBarRef = useRef(showScaleBar);
+    const processingEnabledRef = useRef(processingEnabled);
+
+    useEffect(() => {
+      onParticlesDetectedRef.current = onParticlesDetected;
+      onFpsUpdateRef.current = onFpsUpdate;
+      settingsRef.current = settings;
+      calibrationRef.current = calibration;
+      showOverlayRef.current = showOverlay;
+      showScaleBarRef.current = showScaleBar;
+      processingEnabledRef.current = processingEnabled;
+    }, [onParticlesDetected, onFpsUpdate, settings, calibration, showOverlay, showScaleBar, processingEnabled]);
 
     const [dimensions, setDimensions] = useState({ width: 640, height: 480 });
 
@@ -65,6 +85,26 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       },
       getVideoElement: () => videoRef.current,
     }));
+
+    const resizeCanvasToVideo = useCallback(() => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const overlay = overlayCanvasRef.current;
+
+      if (!video || !canvas || video.readyState < 2) return;
+
+      const { videoWidth, videoHeight } = video;
+
+      if (canvas.width !== videoWidth || canvas.height !== videoHeight) {
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        if (overlay) {
+          overlay.width = videoWidth;
+          overlay.height = videoHeight;
+        }
+        setDimensions({ width: videoWidth, height: videoHeight });
+      }
+    }, []);
 
     // Start/stop webcam stream
     useEffect(() => {
@@ -96,7 +136,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
         if (processingEnabled) {
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           const { particles } = processImage(imageData, settings, calibration);
-          onParticlesDetected(particles, imageData);
+          onParticlesDetectedRef.current(particles, imageData);
 
           // Draw overlay
           if (showOverlay && overlayCanvasRef.current) {
@@ -115,7 +155,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           }
         }
       }
-    }, [externalImage, settings, calibration, showOverlay, showScaleBar, processingEnabled, onParticlesDetected]);
+    }, [externalImage, settings, calibration, showOverlay, showScaleBar, processingEnabled]);
 
     const startStream = async () => {
       try {
@@ -175,9 +215,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           // Remove the error listener if play succeeded
           videoRef.current.removeEventListener('error', handleVideoError);
 
-          // Get video dimensions
-          const { videoWidth, videoHeight } = videoRef.current;
-          setDimensions({ width: videoWidth, height: videoHeight });
+          resizeCanvasToVideo();
 
           // Start processing loop
           startProcessingLoop();
@@ -230,13 +268,15 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     const startFpsCounter = () => {
       frameCountRef.current = 0;
       fpsIntervalRef.current = setInterval(() => {
-        onFpsUpdate(frameCountRef.current);
-        frameCountRef.current = 0;
+        // Atomic capture and reset to ensure accuracy
+        const currentCount = frameCountRef.current;
+        frameCountRef.current = 0; 
+        onFpsUpdateRef.current(currentCount);
       }, 1000);
     };
 
     const drawScaleBar = (ctx: CanvasRenderingContext2D, width: number, height: number) => {
-      const scaleBar = generateScaleBar(calibration, width);
+      const scaleBar = generateScaleBar(calibrationRef.current, width);
       const padding = 20;
       const barHeight = 8;
       const x = padding;
@@ -262,7 +302,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     };
 
     const processFrame = useCallback(() => {
-      if (!videoRef.current || !canvasRef.current || !processingEnabled) {
+      if (!videoRef.current || !canvasRef.current || !processingEnabledRef.current) {
         animationRef.current = requestAnimationFrame(processFrame);
         return;
       }
@@ -289,36 +329,40 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       lastFrameTimeRef.current = now;
       frameCountRef.current++;
 
+      // Sync canvas dimensions if they changed (e.g. resolution adjustment)
+      resizeCanvasToVideo();
+
       // Draw video frame to canvas
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
 
       // Get image data and process
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const { particles } = processImage(imageData, settings, calibration);
-      
-      onParticlesDetected(particles, imageData);
+      const { particles } = processImage(imageData, settingsRef.current, calibrationRef.current);
+
+      // Throttle React UI updates (charts, metrics) to ~4 FPS to prevent freezing
+      const uiElapsed = now - lastUiUpdateRef.current;
+      if (uiElapsed >= 250) { // 250ms interval
+        onParticlesDetectedRef.current(particles, imageData);
+        lastUiUpdateRef.current = now;
+      }
 
       // Draw overlay
-      if (showOverlay && overlayCanvasRef.current) {
+      if (showOverlayRef.current && overlayCanvasRef.current) {
         const overlay = overlayCanvasRef.current;
-        overlay.width = canvas.width;
-        overlay.height = canvas.height;
         const overlayCtx = overlay.getContext('2d');
         
         if (overlayCtx) {
           overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
           drawParticleOverlay(overlayCtx, particles, '#00ff00', true);
 
-          if (showScaleBar) {
+          if (showScaleBarRef.current) {
             drawScaleBar(overlayCtx, canvas.width, canvas.height);
           }
         }
       }
 
       animationRef.current = requestAnimationFrame(processFrame);
-    }, [settings, calibration, showOverlay, showScaleBar, processingEnabled, onParticlesDetected]);
+    }, [resizeCanvasToVideo]);
 
     const startProcessingLoop = () => {
       if (animationRef.current) {
@@ -326,13 +370,6 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       }
       animationRef.current = requestAnimationFrame(processFrame);
     };
-
-    // Restart processing loop when settings change
-    useEffect(() => {
-      if (isStreaming && !externalImage) {
-        startProcessingLoop();
-      }
-    }, [settings, calibration, showOverlay, showScaleBar, processingEnabled]);
 
     return (
       <div className="relative bg-black rounded-lg overflow-hidden">
