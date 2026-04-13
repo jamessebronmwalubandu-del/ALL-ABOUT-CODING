@@ -101,6 +101,9 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     // Debug overlay state
     const [showDebugOverlay, setShowDebugOverlay] = useState(false);
 
+    const PROCESSING_INTERVAL_MS = 250; // 4 FPS max processing
+    const MAX_WORKER_RESPONSE_MS = 5000; // fail-safe timeout without spamming errors
+
     // Keep callbacks in refs to prevent the processing loop from restarting unnecessarily
     const onParticlesDetectedRef = useRef(onParticlesDetected);
     const onFpsUpdateRef = useRef(onFpsUpdate);
@@ -123,9 +126,11 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     // Initialize worker
     useEffect(() => {
       try {
-        workerRef.current = new Worker(new URL('../../workers/particle-worker.ts', import.meta.url), { type: 'module' });
+        const worker = new Worker(new URL('../../workers/particle-worker.ts', import.meta.url), { type: 'module' });
+        workerRef.current = worker;
+        workerBusyRef.current = false;
         
-        workerRef.current.onmessage = (event: MessageEvent) => {
+        worker.onmessage = (event: MessageEvent) => {
           if (!isMountedRef.current) return;
           
           const mainThreadReceiveTime = performance.now();
@@ -137,31 +142,15 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           perfMetricsRef.current.processingTimes.push(processingTime);
           perfMetricsRef.current.processedFrames++;
           
-          // Track transfer latency
-          if (performanceTrace?.metrics?.transferLatency) {
-            perfMetricsRef.current.transferLatencies.push(performanceTrace.metrics.transferLatency);
+          if (performanceTrace?.metrics?.transferTime !== undefined) {
+            perfMetricsRef.current.transferLatencies.push(performanceTrace.metrics.transferTime);
           }
           
-          // Update per-frame performance data
           if (performanceTrace && framePerformanceRef.current.has(frameId)) {
             const frameData = framePerformanceRef.current.get(frameId)!;
             frameData.workerReturnTime = mainThreadReceiveTime;
             frameData.workerLatency = mainThreadReceiveTime - frameData.workerSendTime;
             frameData.performanceTrace = performanceTrace;
-            
-            // Log correlated performance data
-            console.log(`[Main Thread] Frame ${frameId} correlation:`, {
-              workerId: performanceTrace.workerId,
-              pipelineLatency: `${frameData.workerLatency.toFixed(2)}ms (send to return)`,
-              transferLatency: `${performanceTrace.metrics.transferLatency.toFixed(2)}ms (main→worker)`,
-              returnLatency: `${(mainThreadReceiveTime - performanceTrace.timestamps.responseSend).toFixed(2)}ms (worker→main)`,
-              totalWorkerTime: `${totalTime.toFixed(2)}ms`,
-              processingTime: `${processingTime.toFixed(2)}ms`,
-              imageDataSize: `${(performanceTrace.metrics.imageDataSize / 1024 / 1024).toFixed(2)}MB`,
-              particlesFound: performanceTrace.metrics.particlesCount,
-              memoryUsed: performanceTrace.metrics.memoryUsage ? 
-                `${(performanceTrace.metrics.memoryUsage.used / 1024 / 1024).toFixed(2)}MB` : 'N/A',
-            });
           }
           
           if (error) {
@@ -169,9 +158,20 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           } else if (particles) {
             latestParticlesRef.current = particles;
             
-            // Throttle React UI updates (charts, metrics) to ~4 FPS to prevent freezing
+            if (showOverlayRef.current && overlayCanvasRef.current) {
+              const overlay = overlayCanvasRef.current;
+              const overlayCtx = overlay.getContext('2d');
+              if (overlayCtx) {
+                overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+                drawParticleOverlay(overlayCtx, particles, '#00ff00', true);
+                if (showScaleBarRef.current) {
+                  drawScaleBar(overlayCtx, overlay.width, overlay.height);
+                }
+              }
+            }
+            
             const uiElapsed = now - lastUiUpdateRef.current;
-            if (uiElapsed >= 250) { // 250ms interval
+            if (uiElapsed >= 250) {
               const uiStart = performance.now();
               onParticlesDetectedRef.current(particles);
               const uiTime = performance.now() - uiStart;
@@ -180,8 +180,6 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
                 framePerformanceRef.current.get(frameId)!.uiUpdateTime = uiTime;
               }
               lastUiUpdateRef.current = now;
-              
-              console.log(`[Main Thread] Frame ${frameId} UI update: ${uiTime.toFixed(2)}ms`);
             }
           }
           
@@ -190,6 +188,16 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
             clearTimeout(workerTimeoutRef.current);
             workerTimeoutRef.current = null;
           }
+        };
+
+        worker.onerror = (event: ErrorEvent) => {
+          if (!isMountedRef.current) return;
+          workerBusyRef.current = false;
+          if (workerTimeoutRef.current) {
+            clearTimeout(workerTimeoutRef.current);
+            workerTimeoutRef.current = null;
+          }
+          onError(`Worker uncaught error: ${event.message}`);
         };
       } catch (error) {
         onError(`Failed to initialize worker: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -269,101 +277,62 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       };
     }, [isStreaming, deviceId, externalImage]);
 
-    // Handle external image display
+    // Handle external image display and once-only processing
     useEffect(() => {
-      if (externalImage && canvasRef.current) {
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        canvas.width = externalImage.naturalWidth;
-        canvas.height = externalImage.naturalHeight;
-        setDimensions({ width: externalImage.naturalWidth, height: externalImage.naturalHeight });
-
-        ctx.drawImage(externalImage, 0, 0);
-
-        // Process the image
-        if (processingEnabled && workerRef.current && !workerBusyRef.current) {
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          workerBusyRef.current = true;
-          const currentFrameId = frameIdRef.current++;
-          const timestamp = performance.now();
-          
-          workerRef.current.postMessage({
-            imageData: imageData,
-            settings: settings,
-            calibration: calibration,
-            frameId: currentFrameId,
-            timestamp: timestamp,
-          });
-
-          // Set fail-safe timeout
-          workerTimeoutRef.current = setTimeout(() => {
-            if (isMountedRef.current) {
-              workerBusyRef.current = false;
-              perfMetricsRef.current.frameDrops++;
-              onError('Worker response timeout');
-            }
-          }, 1500); // 1.5 second timeout
-
-          // Draw overlay after worker responds
-          const handleWorkerResponse = (event: MessageEvent) => {
-            if (!isMountedRef.current) return;
-            
-            const { particles, error, processingTime, totalTime, performanceTrace } = event.data;
-            
-            // Performance monitoring
-            perfMetricsRef.current.workerLatencies.push(totalTime);
-            perfMetricsRef.current.processingTimes.push(processingTime);
-            perfMetricsRef.current.processedFrames++;
-            
-            // Enhanced performance tracing for external images
-            if (performanceTrace) {
-              const now = performance.now();
-              console.log(`[Main Thread] External Image correlation:`, {
-                workerId: performanceTrace.workerId,
-                totalWorkerTime: `${totalTime.toFixed(2)}ms`,
-                processingTime: `${processingTime.toFixed(2)}ms`,
-                imageDataSize: `${(performanceTrace.metrics.imageDataSize / 1024 / 1024).toFixed(2)}MB`,
-                particlesFound: performanceTrace.metrics.particlesCount,
-                memoryUsed: performanceTrace.metrics.memoryUsage ? 
-                  `${(performanceTrace.metrics.memoryUsage.used / 1024 / 1024).toFixed(2)}MB` : 'N/A',
-                workerToMainLatency: `${(now - performanceTrace.timestamps.responseSend).toFixed(2)}ms`,
-              });
-            }
-            
-            if (!error && particles && overlayCanvasRef.current) {
-              latestParticlesRef.current = particles;
-              const overlay = overlayCanvasRef.current;
-              overlay.width = canvas.width;
-              overlay.height = canvas.height;
-              const overlayCtx = overlay.getContext('2d');
-              if (overlayCtx) {
-                overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-                drawParticleOverlay(overlayCtx, particles, '#00ff00', true);
-
-                if (showScaleBar) {
-                  drawScaleBar(overlayCtx, canvas.width, canvas.height);
-                }
-              }
-            }
-            
-            workerBusyRef.current = false;
-            if (workerTimeoutRef.current) {
-              clearTimeout(workerTimeoutRef.current);
-              workerTimeoutRef.current = null;
-            }
-            if (workerRef.current) {
-              workerRef.current.removeEventListener('message', handleWorkerResponse);
-            }
-          };
-
-          if (workerRef.current) {
-            workerRef.current.addEventListener('message', handleWorkerResponse, { once: true });
-          }
-        }
+      if (!externalImage || !canvasRef.current || !workerRef.current || !processingEnabled) {
+        return;
       }
-    }, [externalImage, settings, calibration, showOverlay, showScaleBar, processingEnabled]);
+
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      canvas.width = externalImage.naturalWidth;
+      canvas.height = externalImage.naturalHeight;
+      if (overlayCanvasRef.current) {
+        overlayCanvasRef.current.width = externalImage.naturalWidth;
+        overlayCanvasRef.current.height = externalImage.naturalHeight;
+      }
+      setDimensions({ width: externalImage.naturalWidth, height: externalImage.naturalHeight });
+
+      ctx.drawImage(externalImage, 0, 0);
+
+      if (workerBusyRef.current) {
+        perfMetricsRef.current.frameDrops++;
+        return;
+      }
+
+      const imageData = imageToImageData(externalImage);
+      workerBusyRef.current = true;
+      const currentFrameId = frameIdRef.current++;
+      const timestamp = performance.now();
+
+      workerRef.current.postMessage(
+        {
+          imageData,
+          settings,
+          calibration,
+          frameId: currentFrameId,
+          timestamp,
+        },
+        [imageData.data.buffer]
+      );
+
+      workerTimeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current) {
+          workerBusyRef.current = false;
+          perfMetricsRef.current.frameDrops++;
+          console.warn('External image worker response timeout');
+        }
+      }, MAX_WORKER_RESPONSE_MS);
+
+      return () => {
+        if (workerTimeoutRef.current) {
+          clearTimeout(workerTimeoutRef.current);
+          workerTimeoutRef.current = null;
+        }
+      };
+    }, [externalImage, settings, calibration, processingEnabled]);
 
     const startStream = async () => {
       try {
@@ -568,136 +537,81 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     };
 
     const processFrame = useCallback(() => {
-      if (!isMountedRef.current || !videoRef.current || !canvasRef.current || !processingEnabledRef.current) {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!isMountedRef.current || !video || !canvas || !processingEnabledRef.current) {
         animationRef.current = requestAnimationFrame(processFrame);
         return;
       }
 
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
+      if (workerBusyRef.current) {
+        perfMetricsRef.current.frameDrops++;
+        animationRef.current = requestAnimationFrame(processFrame);
+        return;
+      }
 
+      const ctx = canvas.getContext('2d');
       if (!ctx || video.readyState < 2) {
         animationRef.current = requestAnimationFrame(processFrame);
         return;
       }
 
-      const frameStart = performance.now();
-      perfMetricsRef.current.totalFrames++;
-
-      // Throttle processing based on settings
       const now = performance.now();
-      const elapsed = now - lastFrameTimeRef.current;
-      const targetInterval = 1000 / 15; // Max 15 fps for processing
-
-      if (elapsed < targetInterval) {
+      if (now - lastFrameTimeRef.current < PROCESSING_INTERVAL_MS) {
         animationRef.current = requestAnimationFrame(processFrame);
         return;
       }
 
       lastFrameTimeRef.current = now;
+      perfMetricsRef.current.totalFrames++;
       frameCountRef.current++;
       const currentFrameId = frameIdRef.current++;
 
-      // Sync canvas dimensions if they changed (e.g. resolution adjustment)
-      const canvasSyncStart = performance.now();
-      resizeCanvasToVideo();
-      const canvasSyncEnd = performance.now();
-
-      // Draw video frame to canvas
-      const drawStart = performance.now();
       ctx.drawImage(video, 0, 0);
-      const drawEnd = performance.now();
-
-      // Get image data
-      const imageDataStart = performance.now();
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const imageDataEnd = performance.now();
-
-      // Initialize per-frame performance tracking
       framePerformanceRef.current.set(currentFrameId, {
         frameId: currentFrameId,
-        captureTime: frameStart,
-        canvasDrawTime: drawEnd - drawStart,
-        imageDataTime: imageDataEnd - imageDataStart,
+        captureTime: now,
+        canvasDrawTime: 0,
+        imageDataTime: 0,
         workerSendTime: 0,
         workerReturnTime: 0,
         workerLatency: 0,
         overlayRenderTime: 0,
       });
 
-      // Send frame to worker only if worker is not busy and component is mounted
-      if (workerRef.current && !workerBusyRef.current && isMountedRef.current) {
+      if (workerRef.current && !workerBusyRef.current) {
         workerBusyRef.current = true;
         const messageSendStart = performance.now();
-        workerRef.current.postMessage({
-          imageData: imageData,
-          settings: settingsRef.current,
-          calibration: calibrationRef.current,
-          frameId: currentFrameId,
-          timestamp: now,
-        });
+        workerRef.current.postMessage(
+          {
+            imageData,
+            settings: settingsRef.current,
+            calibration: calibrationRef.current,
+            frameId: currentFrameId,
+            timestamp: now,
+          },
+          [imageData.data.buffer]
+        );
         const messageSendEnd = performance.now();
 
-        // Update frame performance data with worker send time
         if (framePerformanceRef.current.has(currentFrameId)) {
           framePerformanceRef.current.get(currentFrameId)!.workerSendTime = messageSendEnd;
         }
 
-        // Set fail-safe timeout
         workerTimeoutRef.current = setTimeout(() => {
-          if (isMountedRef.current) {
-            workerBusyRef.current = false;
-            perfMetricsRef.current.frameDrops++;
-            console.warn(`[Main Thread] Frame ${currentFrameId} timeout after ${(performance.now() - now).toFixed(2)}ms`);
-            onError('Worker response timeout');
-          }
-        }, 1500); // 1.5 second timeout
-
-        // Log main thread frame processing details
-        console.log(`[Main Thread] Frame ${currentFrameId} sent to worker:`, {
-          totalFrameTime: `${(performance.now() - frameStart).toFixed(2)}ms`,
-          canvasSyncTime: `${(canvasSyncEnd - canvasSyncStart).toFixed(2)}ms`,
-          drawTime: `${(drawEnd - drawStart).toFixed(2)}ms`,
-          imageDataTime: `${(imageDataEnd - imageDataStart).toFixed(2)}ms`,
-          messageSendTime: `${(messageSendEnd - messageSendStart).toFixed(2)}ms`,
-          imageSize: `${(imageData.data.length / 1024 / 1024).toFixed(2)}MB`,
-        });
+          if (!isMountedRef.current) return;
+          workerBusyRef.current = false;
+          perfMetricsRef.current.frameDrops++;
+          console.warn(`[Main Thread] Frame ${currentFrameId} worker response timeout after ${(performance.now() - now).toFixed(2)}ms`);
+        }, MAX_WORKER_RESPONSE_MS);
       } else {
-        // Track frame drops when worker is busy
         perfMetricsRef.current.frameDrops++;
-        console.log(`[Main Thread] Frame ${currentFrameId} dropped (worker busy)`);
       }
 
-      // Draw overlay using latest particles
-      const overlayStart = performance.now();
-      if (showOverlayRef.current && overlayCanvasRef.current) {
-        const overlay = overlayCanvasRef.current;
-        const overlayCtx = overlay.getContext('2d');
-        
-        if (overlayCtx) {
-          overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-          drawParticleOverlay(overlayCtx, latestParticlesRef.current, '#00ff00', true);
-
-          if (showScaleBarRef.current) {
-            drawScaleBar(overlayCtx, canvas.width, canvas.height);
-          }
-        }
-      }
-      const overlayEnd = performance.now();
-
-      // Update frame performance data with overlay render time
-      if (framePerformanceRef.current.has(currentFrameId)) {
-        framePerformanceRef.current.get(currentFrameId)!.overlayRenderTime = overlayEnd - overlayStart;
-      }
-
-      // Track frame processing time
-      perfMetricsRef.current.frameTimes.push(performance.now() - frameStart);
-
-      console.log(`[Main Thread] Frame ${currentFrameId} overlay time: ${(overlayEnd - overlayStart).toFixed(2)}ms`);
-
+      perfMetricsRef.current.frameTimes.push(performance.now() - now);
       animationRef.current = requestAnimationFrame(processFrame);
-    }, [resizeCanvasToVideo]);
+    }, []);
 
     const startProcessingLoop = () => {
       if (animationRef.current) {

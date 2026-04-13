@@ -2,6 +2,51 @@
 import type { Particle, DetectionSettings, CalibrationSettings } from './types';
 
 /**
+ * Resize image data to maximum dimensions while maintaining aspect ratio
+ */
+export function resizeImageData(imageData: ImageData, maxWidth: number, maxHeight: number): ImageData {
+  const { width, height } = imageData;
+  const aspectRatio = width / height;
+  
+  let newWidth = width;
+  let newHeight = height;
+  
+  if (width > maxWidth) {
+    newWidth = maxWidth;
+    newHeight = Math.round(maxWidth / aspectRatio);
+  }
+  
+  if (newHeight > maxHeight) {
+    newHeight = maxHeight;
+    newWidth = Math.round(maxHeight * aspectRatio);
+  }
+  
+  if (newWidth === width && newHeight === height) {
+    return imageData; // No resize needed
+  }
+  
+  const output = new ImageData(newWidth, newHeight);
+  const scaleX = width / newWidth;
+  const scaleY = height / newHeight;
+  
+  for (let y = 0; y < newHeight; y++) {
+    for (let x = 0; x < newWidth; x++) {
+      const srcX = Math.floor(x * scaleX);
+      const srcY = Math.floor(y * scaleY);
+      const srcIdx = (srcY * width + srcX) * 4;
+      const dstIdx = (y * newWidth + x) * 4;
+      
+      output.data[dstIdx] = imageData.data[srcIdx];
+      output.data[dstIdx + 1] = imageData.data[srcIdx + 1];
+      output.data[dstIdx + 2] = imageData.data[srcIdx + 2];
+      output.data[dstIdx + 3] = imageData.data[srcIdx + 3];
+    }
+  }
+  
+  return output;
+}
+
+/**
  * Convert image data to grayscale
  */
 export function toGrayscale(imageData: ImageData): ImageData {
@@ -258,31 +303,43 @@ export function findContours(binaryImage: ImageData): number[][] {
   const data = binaryImage.data;
   const visited = new Uint8Array(width * height);
   const contours: number[][] = [];
+  const MAX_CONTOURS_PER_FRAME = 150;
+  const MAX_CONTOUR_POINTS = 25000;
+  const MAX_FLOOD_STACK_SIZE = 50000;
   
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
+      if (contours.length >= MAX_CONTOURS_PER_FRAME) {
+        return contours;
+      }
+
       const idx = y * width + x;
       if (visited[idx] || data[idx * 4] === 0) continue;
       
-      // Flood fill to find connected component
       const component: number[] = [];
       const stack: [number, number][] = [[x, y]];
+      let pointCount = 0;
+      let aborted = false;
       
       while (stack.length > 0) {
         const [cx, cy] = stack.pop()!;
-        const cIdx = cy * width + cx;
-        
         if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
+        const cIdx = cy * width + cx;
         if (visited[cIdx] || data[cIdx * 4] === 0) continue;
         
         visited[cIdx] = 1;
         component.push(cx, cy);
+        pointCount++;
         
-        // 4-connected neighbors
+        if (pointCount > MAX_CONTOUR_POINTS || stack.length > MAX_FLOOD_STACK_SIZE) {
+          aborted = true;
+          break;
+        }
+        
         stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
       }
       
-      if (component.length >= 4) { // At least 2 pixels
+      if (!aborted && component.length >= 4) {
         contours.push(component);
       }
     }
@@ -369,8 +426,24 @@ export function processImage(
   settings: DetectionSettings,
   calibration: CalibrationSettings
 ): { particles: Particle[]; processedImage: ImageData } {
+  // Resize image to maximum 1024x768 to improve performance
+  const maxWidth = 1024;
+  const maxHeight = 768;
+  const originalWidth = imageData.width;
+  const originalHeight = imageData.height;
+  let processed = resizeImageData(imageData, maxWidth, maxHeight);
+  const scaleX = processed.width / originalWidth;
+  const scaleY = processed.height / originalHeight;
+  const scale = Math.min(scaleX, scaleY); // Use the smaller scale to maintain aspect
+  
+  // Adjust calibration for resized image
+  const adjustedCalibration = {
+    ...calibration,
+    pixelsPerMm: calibration.pixelsPerMm * scale,
+  };
+  
   // Step 1: Convert to grayscale
-  let processed = toGrayscale(imageData);
+  processed = toGrayscale(processed);
   
   // Step 2: Apply Gaussian blur to reduce noise
   if (settings.blurKernel > 1) {
@@ -410,7 +483,7 @@ export function processImage(
       continue;
     }
     
-    const particle = calculateParticleProperties(contour, calibration, id++);
+    const particle = calculateParticleProperties(contour, adjustedCalibration, id++);
     particles.push(particle);
   }
   

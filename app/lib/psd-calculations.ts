@@ -102,10 +102,10 @@ export function classifyParticles(
 
   const classes = sizeClasses.map(c => ({ ...c, count: 0 }));
   
-  // Count particles in each class
+  // Count particles in each class using right-closed intervals
   for (const particle of particles) {
     for (const cls of classes) {
-      if (particle.diameter >= cls.sizeMin && particle.diameter < cls.sizeMax) {
+      if (particle.diameter > cls.sizeMin && particle.diameter <= cls.sizeMax) {
         cls.count++;
         break;
       }
@@ -134,34 +134,39 @@ function interpolatePassingSize(
   targetPassing: number
 ): number {
   if (sizeClasses.length === 0) return 0;
-  
-  // Sort by size descending
+
+  // Sort by size descending to preserve standard sieve order
   const sorted = [...sizeClasses].sort((a, b) => b.sizeMax - a.sizeMax);
-  
-  // Find the two classes that bracket the target passing percentage
+
+  const clampTarget = Math.max(0, Math.min(100, targetPassing));
+
+  const top = sorted[0];
+  const bottom = sorted[sorted.length - 1];
+
+  if (clampTarget >= top.cumPassing) {
+    return top.sizeMax;
+  }
+  if (clampTarget <= bottom.cumPassing) {
+    return bottom.sizeMin > 0 ? bottom.sizeMin : bottom.sizeMax;
+  }
+
   for (let i = 0; i < sorted.length - 1; i++) {
     const upper = sorted[i];
     const lower = sorted[i + 1];
-    
-    if (upper.cumPassing <= targetPassing && lower.cumPassing >= targetPassing) {
-      // Linear interpolation on log scale (Rosin-Rammler)
-      if (upper.cumPassing === lower.cumPassing) {
+
+    if (upper.cumPassing >= clampTarget && lower.cumPassing <= clampTarget) {
+      if (upper.cumPassing === lower.cumPassing || upper.sizeMax <= 0 || lower.sizeMax <= 0) {
         return upper.sizeMax;
       }
-      
+
       const logUpper = Math.log10(upper.sizeMax);
       const logLower = Math.log10(lower.sizeMax);
-      const fraction = (targetPassing - upper.cumPassing) / (lower.cumPassing - upper.cumPassing);
-      
+      const fraction = (clampTarget - upper.cumPassing) / (lower.cumPassing - upper.cumPassing);
       return Math.pow(10, logUpper + fraction * (logLower - logUpper));
     }
   }
-  
-  // Extrapolate if outside range
-  if (targetPassing < sorted[0].cumPassing) {
-    return sorted[0].sizeMax * 1.1;
-  }
-  return sorted[sorted.length - 1].sizeMin * 0.9;
+
+  return bottom.sizeMin > 0 ? bottom.sizeMin : bottom.sizeMax;
 }
 
 /**
@@ -204,13 +209,22 @@ export function calculatePSDMetrics(
   const stdDev = Math.sqrt(variance);
   const cv = (stdDev / mean) * 100;
   
-  // Percentiles (direct from sorted data)
-  const d10Direct = sizes[Math.floor(n * 0.1)];
-  const d50Direct = sizes[Math.floor(n * 0.5)];
-  const d80Direct = sizes[Math.floor(n * 0.8)];
-  const d90Direct = sizes[Math.floor(n * 0.9)];
+  const percentileValue = (percent: number): number => {
+    if (n === 1) return sizes[0];
+    const rank = (percent / 100) * (n - 1);
+    const lowerIndex = Math.floor(rank);
+    const upperIndex = Math.ceil(rank);
+    if (lowerIndex === upperIndex) return sizes[lowerIndex];
+    const fraction = rank - lowerIndex;
+    return sizes[lowerIndex] * (1 - fraction) + sizes[upperIndex] * fraction;
+  };
+
+  // Percentiles (direct from sorted data with linear interpolation)
+  const d10Direct = percentileValue(10);
+  const d50Direct = percentileValue(50);
+  const d80Direct = percentileValue(80);
+  const d90Direct = percentileValue(90);
   
-  // If we have classified data, use interpolation for more accuracy
   let d10 = d10Direct;
   let d50 = d50Direct;
   let d80 = d80Direct;
@@ -240,7 +254,7 @@ export function calculatePSDMetrics(
     d80,
     d90,
     p80: d80, // P80 is same as D80 in metallurgical nomenclature
-    f80: f80Override || max, // F80 defaults to max size if not overridden
+    f80: f80Override ?? d80, // Use feed override if provided; otherwise default to sample D80
     mean,
     mode,
     span,
