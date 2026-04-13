@@ -303,9 +303,9 @@ export function findContours(binaryImage: ImageData): number[][] {
   const data = binaryImage.data;
   const visited = new Uint8Array(width * height);
   const contours: number[][] = [];
-  const MAX_CONTOURS_PER_FRAME = 150;
-  const MAX_CONTOUR_POINTS = 25000;
-  const MAX_FLOOD_STACK_SIZE = 50000;
+  const MAX_CONTOURS_PER_FRAME = 100; // Reduced for real-time performance
+  const MAX_CONTOUR_POINTS = 10000; // Reduced for real-time performance
+  const MAX_FLOOD_STACK_SIZE = 25000; // Reduced for real-time performance
   
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -426,9 +426,9 @@ export function processImage(
   settings: DetectionSettings,
   calibration: CalibrationSettings
 ): { particles: Particle[]; processedImage: ImageData } {
-  // Resize image to maximum 1024x768 to improve performance
-  const maxWidth = 1024;
-  const maxHeight = 768;
+  // Resize image to maximum 640x480 for real-time performance (reduced from 1024x768)
+  const maxWidth = 640;
+  const maxHeight = 480;
   const originalWidth = imageData.width;
   const originalHeight = imageData.height;
   let processed = resizeImageData(imageData, maxWidth, maxHeight);
@@ -445,16 +445,21 @@ export function processImage(
   // Step 1: Convert to grayscale
   processed = toGrayscale(processed);
   
-  // Step 2: Apply Gaussian blur to reduce noise
+  // Step 2: Apply Gaussian blur to reduce noise (optimize for speed)
   if (settings.blurKernel > 1) {
-    processed = gaussianBlur(processed, settings.blurKernel);
+    // Limit blur kernel for performance - max 3 for real-time
+    const optimizedBlurKernel = Math.min(settings.blurKernel, 3);
+    processed = gaussianBlur(processed, optimizedBlurKernel);
   }
   
-  // Step 3: Apply threshold (adaptive or fixed)
+  // Step 3: Apply threshold (adaptive or fixed) - optimize for speed
   if (settings.useAdaptiveThreshold) {
+    // For real-time performance, use a simpler adaptive approach
+    // Limit block size for performance
+    const optimizedBlockSize = Math.min(settings.adaptiveBlockSize, 15);
     processed = adaptiveThreshold(
       processed, 
-      settings.adaptiveBlockSize, 
+      optimizedBlockSize, 
       settings.adaptiveC,
       settings.invertImage
     );
@@ -462,20 +467,25 @@ export function processImage(
     processed = threshold(processed, settings.threshold, settings.invertImage);
   }
   
-  // Step 4: Morphological operations to clean up
+  // Step 4: Morphological operations to clean up (optimize for speed)
   if (settings.morphKernel > 1) {
-    processed = opening(processed, settings.morphKernel);
-    processed = closing(processed, settings.morphKernel);
+    // Limit morphology kernel for performance - max 3 for real-time
+    const optimizedMorphKernel = Math.min(settings.morphKernel, 3);
+    processed = opening(processed, optimizedMorphKernel);
+    processed = closing(processed, optimizedMorphKernel);
   }
   
-  // Step 5: Find contours
+  // Step 5: Find contours (optimized for real-time)
   const contours = findContours(processed);
   
-  // Step 6: Calculate particle properties with filtering
+  // Step 6: Calculate particle properties with filtering (limit for performance)
   const particles: Particle[] = [];
   let id = 0;
+  const MAX_PARTICLES = 200; // Limit particles for real-time performance
   
   for (const contour of contours) {
+    if (particles.length >= MAX_PARTICLES) break; // Early termination
+    
     const area = contour.length / 2;
     
     // Filter by size
@@ -491,29 +501,31 @@ export function processImage(
 }
 
 /**
- * Draw particle outlines on canvas
+ * Fast particle counting for real-time feedback
  */
-export function drawParticleOverlay(
-  ctx: CanvasRenderingContext2D,
-  particles: Particle[],
-  color: string = '#00ff00',
-  showLabels: boolean = true
-): void {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.font = '10px monospace';
-  ctx.fillStyle = color;
+export function countParticlesFast(
+  imageData: ImageData,
+  settings: DetectionSettings
+): number {
+  // Quick resize for fast counting
+  const fastWidth = 320;
+  const fastHeight = 240;
+  let processed = resizeImageData(imageData, fastWidth, fastHeight);
   
-  for (const particle of particles) {
-    const { boundingBox, diameter, id } = particle;
-    
-    // Draw bounding box
-    ctx.strokeRect(boundingBox.x, boundingBox.y, boundingBox.width, boundingBox.height);
-    
-    // Draw label
-    if (showLabels) {
-      const label = `${diameter.toFixed(1)}mm`;
-      ctx.fillText(label, boundingBox.x, boundingBox.y - 2);
-    }
+  // Simple grayscale
+  processed = toGrayscale(processed);
+  
+  // Simple threshold
+  const thresholdValue = settings.useAdaptiveThreshold ? 127 : settings.threshold;
+  processed = threshold(processed, thresholdValue, settings.invertImage);
+  
+  // Count white pixels as rough particle estimate
+  let whitePixels = 0;
+  const data = processed.data;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > 127) whitePixels++;
   }
+  
+  // Estimate particles (rough heuristic: assume average particle is 50 pixels)
+  return Math.max(1, Math.round(whitePixels / 50));
 }

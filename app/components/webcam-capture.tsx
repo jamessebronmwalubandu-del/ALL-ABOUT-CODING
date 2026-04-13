@@ -102,7 +102,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
     const [showDebugOverlay, setShowDebugOverlay] = useState(false);
 
     const PROCESSING_INTERVAL_MS = 250; // 4 FPS max processing
-    const MAX_WORKER_RESPONSE_MS = 5000; // fail-safe timeout without spamming errors
+    const MAX_WORKER_RESPONSE_MS = 3000; // Reduced timeout for better responsiveness
 
     // Keep callbacks in refs to prevent the processing loop from restarting unnecessarily
     const onParticlesDetectedRef = useRef(onParticlesDetected);

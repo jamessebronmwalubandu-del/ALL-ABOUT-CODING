@@ -65,10 +65,48 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
   
   const transferTime = typeof timestamp === 'number' ? Math.max(0, workerReceiveTime - timestamp) : undefined;
   
+  // Set up processing timeout
+  const PROCESSING_TIMEOUT_MS = 2500; // 2.5 seconds max processing time
+  const timeoutId = setTimeout(() => {
+    const timeoutResponse: WorkerResponse = {
+      error: `Processing timeout after ${PROCESSING_TIMEOUT_MS}ms`,
+      frameId,
+      processingTime: 0,
+      totalTime: performance.now() - workerReceiveTime,
+      performanceTrace: {
+        workerId: WORKER_ID,
+        frameId,
+        timestamps: {
+          workerReceive: workerReceiveTime,
+          processingStart: 0,
+          processingEnd: 0,
+          responseSend: performance.now(),
+        },
+        metrics: {
+          imageDataSize: imageData?.data?.length ?? 0,
+          particlesCount: 0,
+          transferTime,
+          memoryUsage: undefined,
+        },
+        systemInfo: {
+          userAgent: navigator.userAgent,
+          hardwareConcurrency: navigator.hardwareConcurrency,
+          deviceMemory: (navigator as any).deviceMemory,
+        },
+      },
+    };
+    self.postMessage(timeoutResponse);
+  }, PROCESSING_TIMEOUT_MS);
+  
   try {
     const processingStart = performance.now();
     const { particles } = processImage(imageData, settings, calibration);
     const processingEnd = performance.now();
+    
+    // Clear timeout since processing completed
+    clearTimeout(timeoutId);
+    
+    const responseSendTime = performance.now();
     
     const responseSendTime = performance.now();
     
@@ -121,6 +159,9 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
     });
     
   } catch (error) {
+    // Clear timeout on error
+    clearTimeout(timeoutId);
+    
     const errorTime = performance.now();
     const memory = (performance as any).memory;
     const memoryInfo = memory ? {
