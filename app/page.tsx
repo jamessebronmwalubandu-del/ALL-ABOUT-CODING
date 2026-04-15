@@ -98,7 +98,7 @@ export default function PSDAnalyzer() {
   }, []);
 
   // Handle particle detection results
-  const handleParticlesDetected = useCallback((detectedParticles: Particle[], imageData: ImageData) => {
+  const handleParticlesDetected = useCallback((detectedParticles: Particle[], imageData?: ImageData) => {
     setParticles(detectedParticles);
     
     if (detectedParticles.length > 0) {

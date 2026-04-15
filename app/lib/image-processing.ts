@@ -529,3 +529,26 @@ export function countParticlesFast(
   // Estimate particles (rough heuristic: assume average particle is 50 pixels)
   return Math.max(1, Math.round(whitePixels / 50));
 }
+
+export function drawParticleOverlay(
+  ctx: CanvasRenderingContext2D,
+  particles: Particle[],
+  color: string = '#00ff00',
+  showLabels: boolean = true
+): void {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.font = '10px monospace';
+  ctx.fillStyle = color;
+
+  for (const particle of particles) {
+    const { boundingBox, diameter } = particle;
+
+    ctx.strokeRect(boundingBox.x, boundingBox.y, boundingBox.width, boundingBox.height);
+
+    if (showLabels) {
+      const label = `${diameter.toFixed(1)}mm`;
+      ctx.fillText(label, boundingBox.x, boundingBox.y - 2);
+    }
+  }
+}

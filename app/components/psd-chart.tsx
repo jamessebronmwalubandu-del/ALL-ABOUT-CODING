@@ -12,6 +12,7 @@ import {
   ReferenceLine,
   ResponsiveContainer,
 } from 'recharts';
+import type { ValueType, NameType } from 'recharts/types/component/DefaultTooltipContent';
 import type { SizeClass, PSDMetrics } from '../lib/types';
 import { generateCumulativeCurve } from '../lib/psd-calculations';
 
@@ -46,9 +47,14 @@ export function PSDChart({ sizeClasses, metrics }: PSDChartProps) {
     return size.toFixed(2);
   };
 
-  const formatTooltip = (value: number, name: string, props: Record<string, unknown>) => {
-    const size = (props.payload as { size?: number })?.size || Math.pow(10, value);
-    return [`${size.toFixed(2)} mm: ${Number(props.value).toFixed(1)}% passing`, ''];
+  const formatTooltip = (value: ValueType, name: NameType) => {
+    const numValue = typeof value === 'number' ? value : Number(value);
+
+    if (Number.isNaN(numValue)) {
+      return [String(value), String(name)];
+    }
+
+    return [`${numValue.toFixed(2)}`, String(name)];
   };
 
   // Calculate reference lines for key percentiles

@@ -65,9 +65,12 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
   
   const transferTime = typeof timestamp === 'number' ? Math.max(0, workerReceiveTime - timestamp) : undefined;
   
-  // Set up processing timeout
+  let didRespond = false;
   const PROCESSING_TIMEOUT_MS = 2500; // 2.5 seconds max processing time
   const timeoutId = setTimeout(() => {
+    if (didRespond) return;
+    didRespond = true;
+
     const timeoutResponse: WorkerResponse = {
       error: `Processing timeout after ${PROCESSING_TIMEOUT_MS}ms`,
       frameId,
@@ -106,10 +109,10 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
     // Clear timeout since processing completed
     clearTimeout(timeoutId);
     
+    if (didRespond) return;
+    didRespond = true;
+
     const responseSendTime = performance.now();
-    
-    const responseSendTime = performance.now();
-    
     const memory = (performance as any).memory;
     const memoryInfo = memory ? {
       used: memory.usedJSHeapSize,
@@ -162,6 +165,9 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
     // Clear timeout on error
     clearTimeout(timeoutId);
     
+    if (didRespond) return;
+    didRespond = true;
+
     const errorTime = performance.now();
     const memory = (performance as any).memory;
     const memoryInfo = memory ? {
