@@ -163,7 +163,9 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
               const overlayCtx = overlay.getContext('2d');
               if (overlayCtx) {
                 overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-                drawParticleOverlay(overlayCtx, particles, '#00ff00', true);
+                const scaleX = overlay.width / 640;
+                const scaleY = overlay.height / 480;
+                drawParticleOverlay(overlayCtx, particles, '#00ff00', true, scaleX, scaleY);
                 if (showScaleBarRef.current) {
                   drawScaleBar(overlayCtx, overlay.width, overlay.height);
                 }

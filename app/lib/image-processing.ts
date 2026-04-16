@@ -295,7 +295,7 @@ export function closing(imageData: ImageData, kernelSize: number): ImageData {
 }
 
 /**
- * Connected component labeling using flood fill
+ * Connected component labeling (fast flood fill)
  */
 export function findContours(binaryImage: ImageData): number[][] {
   const width = binaryImage.width;
@@ -303,48 +303,48 @@ export function findContours(binaryImage: ImageData): number[][] {
   const data = binaryImage.data;
   const visited = new Uint8Array(width * height);
   const contours: number[][] = [];
-  const MAX_CONTOURS_PER_FRAME = 100; // Reduced for real-time performance
-  const MAX_CONTOUR_POINTS = 10000; // Reduced for real-time performance
-  const MAX_FLOOD_STACK_SIZE = 25000; // Reduced for real-time performance
-  
+
+  const MAX_CONTOURS_PER_FRAME = 200;
+  const MAX_CONTOUR_POINTS = 30000;
+
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      if (contours.length >= MAX_CONTOURS_PER_FRAME) {
-        return contours;
-      }
+      if (contours.length >= MAX_CONTOURS_PER_FRAME) return contours;
 
       const idx = y * width + x;
       if (visited[idx] || data[idx * 4] === 0) continue;
-      
+
       const component: number[] = [];
       const stack: [number, number][] = [[x, y]];
       let pointCount = 0;
-      let aborted = false;
-      
+
       while (stack.length > 0) {
         const [cx, cy] = stack.pop()!;
         if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
+
         const cIdx = cy * width + cx;
         if (visited[cIdx] || data[cIdx * 4] === 0) continue;
-        
+
         visited[cIdx] = 1;
         component.push(cx, cy);
         pointCount++;
-        
-        if (pointCount > MAX_CONTOUR_POINTS || stack.length > MAX_FLOOD_STACK_SIZE) {
-          aborted = true;
-          break;
-        }
-        
-        stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+
+        if (pointCount > MAX_CONTOUR_POINTS) break;
+
+        stack.push(
+          [cx + 1, cy],
+          [cx - 1, cy],
+          [cx, cy + 1],
+          [cx, cy - 1]
+        );
       }
-      
-      if (!aborted && component.length >= 4) {
+
+      if (component.length >= 8) {
         contours.push(component);
       }
     }
   }
-  
+
   return contours;
 }
 
@@ -356,56 +356,49 @@ export function calculateParticleProperties(
   calibration: CalibrationSettings,
   id: number
 ): Particle {
-  const points: { x: number; y: number }[] = [];
+  let sumX = 0;
+  let sumY = 0;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  const numPoints = contour.length / 2;
+
   for (let i = 0; i < contour.length; i += 2) {
-    points.push({ x: contour[i], y: contour[i + 1] });
+    const x = contour[i];
+    const y = contour[i + 1];
+
+    sumX += x;
+    sumY += y;
+
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
   }
-  
-  // Calculate area (number of pixels)
-  const area = points.length;
-  
-  // Calculate centroid
-  let sumX = 0, sumY = 0;
-  for (const p of points) {
-    sumX += p.x;
-    sumY += p.y;
-  }
-  const centroid = { x: sumX / points.length, y: sumY / points.length };
-  
-  // Calculate bounding box
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of points) {
-    minX = Math.min(minX, p.x);
-    minY = Math.min(minY, p.y);
-    maxX = Math.max(maxX, p.x);
-    maxY = Math.max(maxY, p.y);
-  }
-  const boundingBox = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-  
-  // Calculate perimeter (boundary pixels)
-  const perimeterPoints = new Set<string>();
-  for (const p of points) {
-    // Check if this is a boundary pixel
-    const isEdge = points.some(other => 
-      (Math.abs(other.x - p.x) === 1 && other.y === p.y) ||
-      (Math.abs(other.y - p.y) === 1 && other.x === p.x)
-    );
-    if (isEdge) {
-      perimeterPoints.add(`${p.x},${p.y}`);
-    }
-  }
-  const perimeter = Math.max(perimeterPoints.size, Math.PI * 2 * Math.sqrt(area / Math.PI));
-  
-  // Calculate equivalent circular diameter in mm
+
+  const centroid = { x: sumX / numPoints, y: sumY / numPoints };
+
+  const boundingBox = {
+    x: minX,
+    y: minY,
+    width: maxX - minX + 1,
+    height: maxY - minY + 1,
+  };
+
+  const area = numPoints;
+
+  // Better perimeter approximation using bounding box (fast + stable)
+  const perimeter = 2 * (boundingBox.width + boundingBox.height);
+
   const areaInMm2 = area / (calibration.pixelsPerMm * calibration.pixelsPerMm);
   const diameter = 2 * Math.sqrt(areaInMm2 / Math.PI);
-  
-  // Calculate circularity (1.0 = perfect circle)
+
   const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
-  
-  // Calculate aspect ratio
   const aspectRatio = boundingBox.width / Math.max(boundingBox.height, 1);
-  
+
   return {
     id,
     area,
@@ -414,7 +407,7 @@ export function calculateParticleProperties(
     centroid,
     boundingBox,
     aspectRatio,
-    circularity: Math.min(circularity, 1.0), // Cap at 1.0
+    circularity: Math.min(circularity, 1.0),
   };
 }
 
@@ -426,77 +419,74 @@ export function processImage(
   settings: DetectionSettings,
   calibration: CalibrationSettings
 ): { particles: Particle[]; processedImage: ImageData } {
-  // Resize image to maximum 640x480 for real-time performance (reduced from 1024x768)
   const maxWidth = 640;
   const maxHeight = 480;
+
   const originalWidth = imageData.width;
   const originalHeight = imageData.height;
+
   let processed = resizeImageData(imageData, maxWidth, maxHeight);
+
   const scaleX = processed.width / originalWidth;
   const scaleY = processed.height / originalHeight;
-  const scale = Math.min(scaleX, scaleY); // Use the smaller scale to maintain aspect
-  
-  // Adjust calibration for resized image
+  const scale = Math.min(scaleX, scaleY);
+
   const adjustedCalibration = {
     ...calibration,
     pixelsPerMm: calibration.pixelsPerMm * scale,
   };
-  
-  // Step 1: Convert to grayscale
+
   processed = toGrayscale(processed);
-  
-  // Step 2: Apply Gaussian blur to reduce noise (optimize for speed)
+
   if (settings.blurKernel > 1) {
-    // Limit blur kernel for performance - max 3 for real-time
     const optimizedBlurKernel = Math.min(settings.blurKernel, 3);
     processed = gaussianBlur(processed, optimizedBlurKernel);
   }
-  
-  // Step 3: Apply threshold (adaptive or fixed) - optimize for speed
+
   if (settings.useAdaptiveThreshold) {
-    // For real-time performance, use a simpler adaptive approach
-    // Limit block size for performance
     const optimizedBlockSize = Math.min(settings.adaptiveBlockSize, 15);
     processed = adaptiveThreshold(
-      processed, 
-      optimizedBlockSize, 
+      processed,
+      optimizedBlockSize,
       settings.adaptiveC,
       settings.invertImage
     );
   } else {
     processed = threshold(processed, settings.threshold, settings.invertImage);
   }
-  
-  // Step 4: Morphological operations to clean up (optimize for speed)
+
   if (settings.morphKernel > 1) {
-    // Limit morphology kernel for performance - max 3 for real-time
     const optimizedMorphKernel = Math.min(settings.morphKernel, 3);
     processed = opening(processed, optimizedMorphKernel);
     processed = closing(processed, optimizedMorphKernel);
   }
-  
-  // Step 5: Find contours (optimized for real-time)
+
   const contours = findContours(processed);
-  
-  // Step 6: Calculate particle properties with filtering (limit for performance)
+
   const particles: Particle[] = [];
   let id = 0;
-  const MAX_PARTICLES = 200; // Limit particles for real-time performance
-  
+
+  const MAX_PARTICLES = 400;
+  const MAX_DIAMETER_MM = 250;
+  const MIN_DIAMETER_MM = 0.5;
+
   for (const contour of contours) {
-    if (particles.length >= MAX_PARTICLES) break; // Early termination
-    
+    if (particles.length >= MAX_PARTICLES) break;
+
     const area = contour.length / 2;
-    
-    // Filter by size
+
     if (area < settings.minParticleSize || area > settings.maxParticleSize) {
       continue;
     }
-    
+
     const particle = calculateParticleProperties(contour, adjustedCalibration, id++);
+
+    if (particle.diameter < MIN_DIAMETER_MM) continue;
+    if (particle.diameter > MAX_DIAMETER_MM) continue;
+
     particles.push(particle);
   }
-  
+
   return { particles, processedImage: processed };
 }
 
@@ -530,25 +520,39 @@ export function countParticlesFast(
   return Math.max(1, Math.round(whitePixels / 50));
 }
 
+/**
+ * Draw bounding boxes + diameter labels
+ */
 export function drawParticleOverlay(
   ctx: CanvasRenderingContext2D,
   particles: Particle[],
   color: string = '#00ff00',
-  showLabels: boolean = true
+  showLabels: boolean = true,
+  scaleX: number = 1,
+  scaleY: number = 1
 ): void {
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
-  ctx.font = '10px monospace';
+  ctx.font = '12px monospace';
   ctx.fillStyle = color;
 
   for (const particle of particles) {
     const { boundingBox, diameter } = particle;
 
-    ctx.strokeRect(boundingBox.x, boundingBox.y, boundingBox.width, boundingBox.height);
+    ctx.strokeRect(
+      boundingBox.x * scaleX,
+      boundingBox.y * scaleY,
+      boundingBox.width * scaleX,
+      boundingBox.height * scaleY
+    );
 
     if (showLabels) {
       const label = `${diameter.toFixed(1)}mm`;
-      ctx.fillText(label, boundingBox.x, boundingBox.y - 2);
+      ctx.fillText(
+        label,
+        boundingBox.x * scaleX,
+        Math.max(10, boundingBox.y * scaleY - 4)
+      );
     }
   }
 }
