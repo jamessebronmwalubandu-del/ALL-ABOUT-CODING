@@ -38,6 +38,7 @@ import type {
 import { DEFAULT_DETECTION_SETTINGS, DEFAULT_CALIBRATION } from './lib/types';
 import { generateStandardSizeClasses, classifyParticles, calculatePSDMetrics } from './lib/psd-calculations';
 import { loadImageFromFile } from './lib/image-sources';
+import { analyzeImage } from '@/lib/psdApi';
 
 export default function PSDAnalyzer() {
   // State
@@ -56,12 +57,14 @@ export default function PSDAnalyzer() {
   const [sizeClasses, setSizeClasses] = useState<SizeClass[]>([]);
   const [metrics, setMetrics] = useState<PSDMetrics>({
     d10: 0, d50: 0, d80: 0, d90: 0, p80: 0, f80: 0,
-    mean: 0, mode: 0, span: 0, min: 0, max: 0, count: 0, cv: 0
+    mean: 0, mode: 0, span: 0, min: 0, max: 0, count: 0, cv: 0,
+    reductionRatio: 0,
   });
   const [previousMetrics, setPreviousMetrics] = useState<PSDMetrics | null>(null);
   const [trendData, setTrendData] = useState<TrendDataPoint[]>([]);
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [fps, setFps] = useState(0);
+  const [externalAnalysisParticles, setExternalAnalysisParticles] = useState<Particle[] | null>(null);
 
   // Refs
   const webcamRef = useRef<WebcamCaptureHandle>(null);
@@ -72,9 +75,10 @@ export default function PSDAnalyzer() {
     if (type !== 'webcam' && type !== 'ip-camera') {
       setIsStreaming(false);
     }
-    // Clear external image if switching to live sources
+    // Clear external image and external analysis state when switching to live sources
     if (type === 'webcam' || type === 'ip-camera') {
       setExternalImage(null);
+      setExternalAnalysisParticles(null);
     }
   }, []);
 
@@ -82,59 +86,90 @@ export default function PSDAnalyzer() {
   const handleFileSelect = useCallback(async (files: File[]) => {
     if (files.length > 0) {
       try {
-        const img = await loadImageFromFile(files[0]);
-        setExternalImage(img);
+        const image = await loadImageFromFile(files[0]);
+
+        const backendResult = await analyzeImage(files[0], { calibration, settings });
+        console.log('Backend image analysis result:', backendResult);
+
+        setPreviousMetrics(metrics.count > 0 ? metrics : null);
+        setExternalImage(image);
+        setParticles(backendResult.particles);
+        setExternalAnalysisParticles(backendResult.particles);
+        setMetrics(backendResult.metrics);
+        setSizeClasses(backendResult.sizeClasses);
         setIsStreaming(false);
+
+        setResults(prev => [
+          {
+            id: backendResult.id,
+            timestamp: new Date(backendResult.timestamp),
+            particles: backendResult.particles,
+            metrics: backendResult.metrics,
+            sizeClasses: backendResult.sizeClasses,
+            imageDataUrl: image.src,
+            settings,
+            calibration,
+          },
+          ...prev,
+        ].slice(0, 20));
       } catch (error) {
-        console.error('Failed to load image:', error);
+        console.error('Failed to process file:', error);
       }
     }
-  }, []);
+  }, [calibration, settings, metrics]);
 
   // Handle paste image
   const handlePasteImage = useCallback((img: HTMLImageElement) => {
     setExternalImage(img);
+    setExternalAnalysisParticles(null);
     setIsStreaming(false);
   }, []);
 
   // Handle particle detection results
-  const handleParticlesDetected = useCallback((detectedParticles: Particle[], imageData?: ImageData) => {
-    setParticles(detectedParticles);
-    
-    if (detectedParticles.length > 0) {
-      // Generate size classes and classify particles
-      const classes = generateStandardSizeClasses(detectedParticles);
-      const classifiedClasses = classifyParticles(detectedParticles, classes);
-      setSizeClasses(classifiedClasses);
-      
-      // Calculate metrics
-      const newMetrics = calculatePSDMetrics(detectedParticles, classifiedClasses);
-      setPreviousMetrics(metrics.count > 0 ? metrics : null);
-      setMetrics(newMetrics);
-      
-      // Add to trend data (throttled)
-      setTrendData(prev => {
-        const now = new Date();
-        const last = prev[prev.length - 1];
-        
-        // Only add if at least 1 second has passed
-        if (!last || now.getTime() - last.timestamp.getTime() > 1000) {
-          const newPoint: TrendDataPoint = {
-            timestamp: now,
-            p80: newMetrics.p80,
-            d50: newMetrics.d50,
-            d10: newMetrics.d10,
-            d90: newMetrics.d90,
-            count: newMetrics.count,
-          };
-          
-          // Keep last 300 points (5 minutes at 1/sec)
-          return [...prev.slice(-299), newPoint];
-        }
-        return prev;
-      });
-    }
-  }, [metrics]);
+  const handleParticlesDetected = useCallback(
+    (detectedParticles: Particle[], imageData?: ImageData, source: 'backend' | 'worker' = 'worker') => {
+      setParticles(detectedParticles);
+
+      if (source === 'backend') {
+        return;
+      }
+
+      if (detectedParticles.length > 0) {
+        // Generate size classes and classify particles
+        const classes = generateStandardSizeClasses(detectedParticles);
+        const classifiedClasses = classifyParticles(detectedParticles, classes);
+        setSizeClasses(classifiedClasses);
+
+        // Calculate metrics
+        const newMetrics = calculatePSDMetrics(detectedParticles, classifiedClasses);
+        setPreviousMetrics(metrics.count > 0 ? metrics : null);
+        setMetrics(newMetrics);
+
+        // Add to trend data (throttled)
+        setTrendData(prev => {
+          const now = new Date();
+          const last = prev[prev.length - 1];
+
+          // Only add if at least 1 second has passed
+          if (!last || now.getTime() - last.timestamp.getTime() > 1000) {
+            const newPoint: TrendDataPoint = {
+              timestamp: now,
+              p80: newMetrics.p80,
+              d50: newMetrics.d50,
+              d10: newMetrics.d10,
+              d90: newMetrics.d90,
+              count: newMetrics.count,
+            };
+
+            // Keep last 300 points (5 minutes at 1/sec)
+            return [...prev.slice(-299), newPoint];
+          }
+          return prev;
+        });
+      }
+    },
+    [metrics]
+  );
 
   // Handle FPS update
   const handleFpsUpdate = useCallback((newFps: number) => {
@@ -208,6 +243,7 @@ export default function PSDAnalyzer() {
               onFpsUpdate={handleFpsUpdate}
               onError={handleError}
               externalImage={externalImage}
+              precomputedParticles={externalAnalysisParticles}
               showOverlay={showOverlay}
               showScaleBar={showScaleBar}
               processingEnabled={processingEnabled}

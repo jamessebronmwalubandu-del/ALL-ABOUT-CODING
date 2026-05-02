@@ -11,7 +11,7 @@ export function generateCSV(
   const lines: string[] = [];
   
   // Header for summary data
-  lines.push('Timestamp,Count,D10 (mm),D50 (mm),D80 (mm),D90 (mm),P80 (mm),Mean (mm),Min (mm),Max (mm),CV (%)');
+  lines.push('Timestamp,Count,D10 (mm),D50 (mm),D80 (mm),D90 (mm),P80 (mm),F80 (mm),Reduction Ratio,Mean (mm),Min (mm),Max (mm),CV (%)');
   
   for (const result of results) {
     const m = result.metrics;
@@ -23,6 +23,8 @@ export function generateCSV(
       m.d80.toFixed(3),
       m.d90.toFixed(3),
       m.p80.toFixed(3),
+      m.f80.toFixed(3),
+      m.reductionRatio.toFixed(3),
       m.mean.toFixed(3),
       m.min.toFixed(3),
       m.max.toFixed(3),
@@ -161,6 +163,8 @@ export function generateExcelXML(
     <Cell><Data ss:Type="String">D80 (mm)</Data></Cell>
     <Cell><Data ss:Type="String">D90 (mm)</Data></Cell>
     <Cell><Data ss:Type="String">P80 (mm)</Data></Cell>
+    <Cell><Data ss:Type="String">F80 (mm)</Data></Cell>
+    <Cell><Data ss:Type="String">Reduction Ratio</Data></Cell>
     <Cell><Data ss:Type="String">Mean (mm)</Data></Cell>
     <Cell><Data ss:Type="String">Min (mm)</Data></Cell>
     <Cell><Data ss:Type="String">Max (mm)</Data></Cell>
@@ -178,6 +182,8 @@ export function generateExcelXML(
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.d80}</Data></Cell>
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.d90}</Data></Cell>
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.p80}</Data></Cell>
+    <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.f80}</Data></Cell>
+    <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.reductionRatio}</Data></Cell>
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.mean}</Data></Cell>
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.min}</Data></Cell>
     <Cell ss:StyleID="Number"><Data ss:Type="Number">${m.max}</Data></Cell>
@@ -379,9 +385,9 @@ export function generatePDFHTML(
   </style>
 </head>
 <body>
-  <h1>Particle Size Distribution Analysis Report</h1>
-  
+  <h1>PSD Analyzer Report</h1>
   <div class="header-info">
+    <div><strong>Report:</strong> Particle Size Distribution</div>
     <div><strong>Date:</strong> ${timestamp.toLocaleDateString()}</div>
     <div><strong>Time:</strong> ${timestamp.toLocaleTimeString()}</div>
     <div><strong>Samples:</strong> ${results.length}</div>
@@ -409,6 +415,14 @@ export function generatePDFHTML(
     <div class="metric-card">
       <div class="metric-value">${metrics.mean.toFixed(2)}</div>
       <div class="metric-label">Mean (mm)</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-value">${metrics.f80.toFixed(2)}</div>
+      <div class="metric-label">F80 (mm)</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-value">${metrics.reductionRatio.toFixed(2)}</div>
+      <div class="metric-label">Reduction Ratio</div>
     </div>
     <div class="metric-card">
       <div class="metric-value">${metrics.span.toFixed(2)}</div>

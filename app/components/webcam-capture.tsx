@@ -16,12 +16,13 @@ interface WebcamCaptureProps {
   isStreaming: boolean;
   settings: DetectionSettings;
   calibration: CalibrationSettings;
-  onParticlesDetected: (particles: Particle[], imageData?: ImageData) => void;
+  onParticlesDetected: (particles: Particle[], imageData?: ImageData, source?: 'backend' | 'worker') => void;
   onFpsUpdate: (fps: number) => void;
   onError: (error: string) => void;
   externalImage?: HTMLImageElement | null;
   showOverlay: boolean;
   showScaleBar: boolean;
+  precomputedParticles?: Particle[] | null;
   processingEnabled: boolean;
 }
 
@@ -36,6 +37,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       onFpsUpdate,
       onError,
       externalImage,
+      precomputedParticles,
       showOverlay,
       showScaleBar,
       processingEnabled,
@@ -134,7 +136,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           if (!isMountedRef.current) return;
           
           const mainThreadReceiveTime = performance.now();
-          const { particles, error, frameId, processingTime, totalTime, performanceTrace } = event.data;
+          const { particles, processedWidth, processedHeight, error, frameId, processingTime, totalTime, performanceTrace } = event.data;
           
           // Performance monitoring
           const now = performance.now();
@@ -163,8 +165,10 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
               const overlayCtx = overlay.getContext('2d');
               if (overlayCtx) {
                 overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
-                const scaleX = overlay.width / 640;
-                const scaleY = overlay.height / 480;
+                const targetWidth = processedWidth || 640;
+                const targetHeight = processedHeight || 480;
+                const scaleX = overlay.width / targetWidth;
+                const scaleY = overlay.height / targetHeight;
                 drawParticleOverlay(overlayCtx, particles, '#00ff00', true, scaleX, scaleY);
                 if (showScaleBarRef.current) {
                   drawScaleBar(overlayCtx, overlay.width, overlay.height);
@@ -175,7 +179,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
             const uiElapsed = now - lastUiUpdateRef.current;
             if (uiElapsed >= 250) {
               const uiStart = performance.now();
-              onParticlesDetectedRef.current(particles);
+              onParticlesDetectedRef.current(particles, undefined, 'worker');
               const uiTime = performance.now() - uiStart;
               perfMetricsRef.current.uiUpdateTimes.push(uiTime);
               if (framePerformanceRef.current.has(frameId)) {
@@ -281,7 +285,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
 
     // Handle external image display and once-only processing
     useEffect(() => {
-      if (!externalImage || !canvasRef.current || !workerRef.current || !processingEnabled) {
+      if (!externalImage || !canvasRef.current) {
         return;
       }
 
@@ -298,6 +302,27 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
       setDimensions({ width: externalImage.naturalWidth, height: externalImage.naturalHeight });
 
       ctx.drawImage(externalImage, 0, 0);
+
+      if (precomputedParticles && precomputedParticles.length > 0) {
+        const overlay = overlayCanvasRef.current;
+        if (overlay) {
+          const overlayCtx = overlay.getContext('2d');
+          if (overlayCtx) {
+            overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+            drawParticleOverlay(overlayCtx, precomputedParticles, '#00ff00', true, 1, 1);
+            if (showScaleBarRef.current) {
+              drawScaleBar(overlayCtx, overlay.width, overlay.height);
+            }
+          }
+        }
+
+        onParticlesDetectedRef.current(precomputedParticles, imageToImageData(externalImage), 'backend');
+        return;
+      }
+
+      if (!processingEnabled || !workerRef.current) {
+        return;
+      }
 
       if (workerBusyRef.current) {
         perfMetricsRef.current.frameDrops++;
@@ -334,7 +359,7 @@ export const WebcamCapture = forwardRef<WebcamCaptureHandle, WebcamCaptureProps>
           workerTimeoutRef.current = null;
         }
       };
-    }, [externalImage, settings, calibration, processingEnabled]);
+    }, [externalImage, settings, calibration, processingEnabled, precomputedParticles]);
 
     const startStream = async () => {
       try {

@@ -418,7 +418,7 @@ export function processImage(
   imageData: ImageData,
   settings: DetectionSettings,
   calibration: CalibrationSettings
-): { particles: Particle[]; processedImage: ImageData } {
+): { particles: Particle[]; processedImage: ImageData; processedWidth: number; processedHeight: number } {
   const maxWidth = 640;
   const maxHeight = 480;
 
@@ -427,8 +427,10 @@ export function processImage(
 
   let processed = resizeImageData(imageData, maxWidth, maxHeight);
 
-  const scaleX = processed.width / originalWidth;
-  const scaleY = processed.height / originalHeight;
+  const processedWidth = processed.width;
+  const processedHeight = processed.height;
+  const scaleX = processedWidth / originalWidth;
+  const scaleY = processedHeight / originalHeight;
   const scale = Math.min(scaleX, scaleY);
 
   const adjustedCalibration = {
@@ -487,7 +489,12 @@ export function processImage(
     particles.push(particle);
   }
 
-  return { particles, processedImage: processed };
+  return {
+    particles,
+    processedImage: processed,
+    processedWidth,
+    processedHeight,
+  };
 }
 
 /**

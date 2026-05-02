@@ -11,6 +11,8 @@ interface WorkerMessage {
 
 interface WorkerResponse {
   particles?: Particle[];
+  processedWidth?: number;
+  processedHeight?: number;
   error?: string;
   frameId: number;
   processingTime: number;
@@ -103,7 +105,7 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
   
   try {
     const processingStart = performance.now();
-    const { particles } = processImage(imageData, settings, calibration);
+    const { particles, processedWidth, processedHeight } = processImage(imageData, settings, calibration);
     const processingEnd = performance.now();
     
     // Clear timeout since processing completed
@@ -144,6 +146,8 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
     
     const response: WorkerResponse = { 
       particles,
+      processedWidth,
+      processedHeight,
       frameId,
       processingTime: processingEnd - processingStart,
       totalTime: responseSendTime - workerReceiveTime,
