@@ -46,7 +46,7 @@ export function PSDChart({ sizeClasses, metrics }: PSDChartProps) {
     return size.toFixed(2);
   };
 
-  const formatTooltip = (value: number, name: string, props: Record<string, unknown>) => {
+  const formatTooltip = (value: any, name: any, props: any) => {
     const size = (props.payload as { size?: number })?.size || Math.pow(10, value);
     return [`${size.toFixed(2)} mm: ${Number(props.value).toFixed(1)}% passing`, ''];
   };

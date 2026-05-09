@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import type { Particle, DetectionSettings, CalibrationSettings } from '../lib/types';
-import { drawParticleOverlay } from '../lib/image-processing';
+import { drawParticleOverlay } from './draw-particle-overlay';
 import { videoFrameToImageData, imageToImageData, getWebcamStream, checkCameraPermissions, requestCameraPermissions } from '../lib/image-sources';
 import { generateScaleBar } from '../lib/calibration';
 

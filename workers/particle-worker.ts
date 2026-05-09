@@ -108,8 +108,6 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
     
     const responseSendTime = performance.now();
     
-    const responseSendTime = performance.now();
-    
     const memory = (performance as any).memory;
     const memoryInfo = memory ? {
       used: memory.usedJSHeapSize,
