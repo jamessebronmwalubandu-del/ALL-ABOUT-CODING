@@ -1,5 +1,5 @@
 // Particle Size Distribution Statistical Calculations
-import type { Particle, PSDMetrics, SizeClass, STANDARD_SIZE_CLASSES } from './types';
+import type { Particle, PSDMetrics, SizeClass } from './types';
 
 /**
  * Generate size classes for analysis
@@ -192,6 +192,7 @@ export function calculatePSDMetrics(
       max: 0,
       count: 0,
       cv: 0,
+      reductionRatio: 0,
     };
   }
 
@@ -248,13 +249,17 @@ export function calculatePSDMetrics(
   // Span (distribution spread)
   const span = d50 > 0 ? (d90 - d10) / d50 : 0;
   
+  const p80 = d80;
+  const f80 = f80Override ?? d80;
+  const reductionRatio = p80 > 0 ? f80 / p80 : 0;
+
   return {
     d10,
     d50,
     d80,
     d90,
-    p80: d80, // P80 is same as D80 in metallurgical nomenclature
-    f80: f80Override ?? d80, // Use feed override if provided; otherwise default to sample D80
+    p80,
+    f80,
     mean,
     mode,
     span,
@@ -262,6 +267,7 @@ export function calculatePSDMetrics(
     max,
     count: n,
     cv,
+    reductionRatio,
   };
 }
 

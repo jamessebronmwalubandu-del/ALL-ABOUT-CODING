@@ -25,6 +25,7 @@ export interface PSDMetrics {
   max: number;
   count: number; // total particle count
   cv: number; // coefficient of variation (%)
+  reductionRatio: number; // F80 / P80 ratio for crushing efficiency
 }
 
 export interface SizeClass {

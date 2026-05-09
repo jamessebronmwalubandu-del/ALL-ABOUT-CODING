@@ -174,7 +174,7 @@ export function MetricsPanel({ metrics, previousMetrics, isProcessing }: Metrics
               </span>
               <div className="flex items-baseline gap-1 mt-1 justify-end">
                 <span className="text-lg font-bold font-mono">
-                  {metrics.p80 > 0 ? (metrics.f80 / metrics.p80).toFixed(2) : '-'}
+                  {metrics.reductionRatio.toFixed(2)}
                 </span>
                 <span className="text-xs text-muted-foreground">:1</span>
               </div>
